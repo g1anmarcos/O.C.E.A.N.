@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getChargebackFilteredCases, getQueueCasesForView, matchesChargebackCase } = require('../chargeback-filter.js');
+const { getChargebackFilteredCases, getQueueCasesForView, matchesChargebackCase, getChargebackQueueCases } = require('../chargeback-filter.js');
 
 function makeCase(overrides = {}) {
   return {
@@ -31,4 +31,16 @@ test('chargeback filters apply to both the queue and the chargeback panel', () =
   assert.deepStrictEqual(queueViewCases.map((c) => c.id), ['REG-E-1001']);
   assert.equal(matchesChargebackCase(cases[0], filters), true);
   assert.equal(matchesChargebackCase(cases[1], filters), false);
+});
+
+test('chargeback queue helper returns only cases waiting for Mastercard response', () => {
+  const cases = [
+    makeCase(),
+    makeCase({ id: 'REG-E-1002', customer: 'Grace Hopper', account: '2222222222', chargebackAmount: 1000 }),
+    makeCase({ id: 'REG-E-1003', customer: 'Alan Turing', account: '3333333333', chargebackStage: 'Resolved - No merchant representment' }),
+  ];
+
+  const queued = getChargebackQueueCases(cases, { caseId: 'reg-e-1001' });
+
+  assert.deepStrictEqual(queued.map((c) => c.id), ['REG-E-1001']);
 });

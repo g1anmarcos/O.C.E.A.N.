@@ -489,12 +489,43 @@ function chargebackCasePanel(c){
   let win=(c.chargebackExpectedStart&&c.chargebackExpectedEnd)?(c.chargebackExpectedStart+' to '+c.chargebackExpectedEnd):'Not calculated';
   return '<div class="card pad" style="margin-top:12px"><div class="between"><div><h3>'+c.id+' - '+c.customer+'</h3><p class="muted">Account '+c.account+' | '+caseTxnType(c)+' | '+money(c.chargebackAmount||0)+'</p></div><button class="secondary" onclick="selectCase(&quot;'+c.id+'&quot;)">Open Full Case</button></div><table><tr><td>Chargeback status</td><td><strong>'+c.chargebackStage+'</strong></td></tr><tr><td>Filed with</td><td>'+c.chargebackNetwork+'</td></tr><tr><td>Filed date</td><td>'+c.chargebackFiledDate+'</td></tr><tr><td>Expected Mastercard response</td><td>'+win+' <span class="muted">(30–50 days)</span></td></tr><tr><td>Amount</td><td>'+money(c.chargebackAmount||0)+'</td></tr></table><div class="notice">Mastercard is contacting the merchant for representment. Record the response once Mastercard gets back to the bank.</div><div class="row"><button class="good" onclick="selectedId=&quot;'+c.id+'&quot;;recordMastercardNoRepresentment()">No Representment - Customer Keeps Credit</button><button class="primary" onclick="selectedId=&quot;'+c.id+'&quot;;recordMastercardRepresentment()">Merchant Represented / Funds Recovered</button></div><div class="box">'+(c.chargebackLetter||'No package text found.')+'</div></div>';
 }
-function renderCompactCaseCards(containerId, rows, emptyText, cardHtmlFn){
-  let el=document.getElementById(containerId);
+function renderChargeback(){
+  let el=document.getElementById('chargebackBody');
   if(!el)return;
-  rows=cases.filter(isChargebackInProcess).filter(matchesChargebackCase);
+  let rows=getChargebackQueueCases(cases, chargebackFilters);
   el.innerHTML='<div class="notice">Cases enter this queue automatically after provisional credit is posted on a Mastercard debit/credit card dispute. Expected response is calculated as 30–50 calendar days from the filing date.</div>'
   +(rows.map(chargebackCasePanel).join('')||'<div class="notice">No Mastercard chargebacks are currently waiting for response.</div>');
+}
+
+function compactCaseCard(c, opts) {
+  opts = opts || {};
+  let title = opts.title || c.id;
+  let subtitle = opts.subtitle || (c.customer + ' • ' + c.account);
+  let amount = opts.amount || money(c.amount);
+  let status = opts.status || c.status;
+  let meta = (opts.meta || []).filter(Boolean).join(' · ');
+  let footer = opts.footer || '';
+  let handler = opts.openHandler || "selectCase('" + c.id + "')";
+  let badgeText = opts.badgeText || '';
+  let badgeClass = opts.badgeClass || '';
+  let badgeHtml = badgeText ? '<span class="badge ' + badgeClass + '">' + badgeText + '</span>' : badge(c);
+  return '<div class="card pad" style="margin-top:12px;cursor:pointer" onclick="' + handler + '">'
+    + '<div class="between"><div><strong>' + title + '</strong> ' + badgeHtml
+    + '<div class="muted">' + subtitle + '</div></div>'
+    + '<div style="text-align:right"><strong>' + amount + '</strong>'
+    + (meta ? '<div class="muted mini">' + meta + '</div>' : '')
+    + '</div></div>'
+    + (footer ? '<div class="muted mini" style="margin-top:6px">' + footer + '</div>' : '')
+    + '</div>';
+}
+
+function renderCompactCaseCards(containerId, rows, emptyText, cardHtmlFn) {
+  let el = document.getElementById(containerId);
+  if (!el) return;
+  let resolvedRows = Array.isArray(rows) ? rows : [];
+  el.innerHTML = resolvedRows.length
+    ? resolvedRows.map(c => cardHtmlFn(c)).join('')
+    : (emptyText ? '<div class="notice">' + emptyText + '</div>' : '<div class="notice">No matching cases.</div>');
 }
 function recordMastercardNoRepresentment(){
   let c=cur();if(!c)return;

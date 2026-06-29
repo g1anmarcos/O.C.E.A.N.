@@ -17,6 +17,10 @@ function getChargebackFilteredCases(cases, filters = {}) {
   return cases.filter(isChargebackInProcess).filter((c) => matchesChargebackCase(c, filters));
 }
 
+function getChargebackQueueCases(cases, filters = {}) {
+  return getChargebackFilteredCases(cases, filters);
+}
+
 function getQueueCasesForView(cases, activeView, filters = {}) {
   if (activeView !== 'chargeback') {
     return cases;
@@ -29,5 +33,6 @@ module.exports = {
   isChargebackInProcess,
   matchesChargebackCase,
   getChargebackFilteredCases,
+  getChargebackQueueCases,
   getQueueCasesForView,
 };
