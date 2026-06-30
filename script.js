@@ -183,7 +183,11 @@ function renderCaseActions(c) {
   } else if (c.status === 'Ready for Final Decision') {
     html = '<h3>Advance Case</h3><button class="good" onclick="openFinalDecision()">Final Decision</button>' + commonActionButtons(c);
   } else if (isFinalDecisionPosted(c) && !c.auditReady) {
-    let recoveryButtons = pendingRecoveryAmount(c) > 0 || String(c.status || '').toLowerCase().includes('pending recovery') || !!c.recoveryDecisionPending
+    // Only show recovery resolution buttons when the case is explicitly
+    // flagged as a pending-recovery final outcome and there is an open
+    // pending amount. This prevents exposing recovery actions for other
+    // closed cases.
+    let recoveryButtons = (isPendingRecoveryCaseInUi(c) && pendingRecoveryAmount(c) > 0)
       ? '<button class="good" onclick="resolvePendingRecoveryCase(\'' + c.id + '\',\'recovered\')">Funds recovered</button><button class="bad" onclick="resolvePendingRecoveryCase(\'' + c.id + '\',\'not-recovered\')">Funds not recovered</button>'
       : '';
     html = '<h3>Advance Case</h3>' + recoveryButtons + '<button class="dark" onclick="managerApprove()">Manager Sign-Off & Close Case</button>' + commonActionButtons(c);
@@ -241,7 +245,14 @@ function ledgerCreditTotal(c) { return ledgerEntries(c).filter(isPositiveProvisi
 function ledgerPermanentTotal(c) { return ledgerEntries(c).filter(isPermanentEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
 function ledgerRecoveryTotal(c) { return ledgerEntries(c).filter(isRecoveryEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
 function ledgerChargeOffTotal(c) { return ledgerEntries(c).filter(isChargeOffEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
-function ledgerPendingThirdPartyTotal(c) { return ledgerEntries(c).filter(isPendingThirdPartyEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
+function ledgerPendingThirdPartyTotal(c) {
+  // Only count pending third-party (closed-to-customer pending recovery)
+  // ledger amounts when the case is explicitly flagged as a pending
+  // recovery final decision. This avoids accidental activation when
+  // ledger rows exist but the final decision did not select pending recovery.
+  if (!isPendingRecoveryCaseInUi(c)) return 0;
+  return ledgerEntries(c).filter(isPendingThirdPartyEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0);
+}
 function ledgerExternalRecoveryTotal(c) { return ledgerEntries(c).filter(isExternalRecoveryEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
 function ledgerRecoveryChargeOffTotal(c) { return ledgerEntries(c).filter(isRecoveryChargeOffEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
 function ledgerActiveProvisional(c) { return Math.max(ledgerCreditTotal(c) - ledgerPermanentTotal(c) - ledgerRecoveryTotal(c) - ledgerRecoveryChargeOffTotal(c), 0) }
@@ -496,7 +507,29 @@ function submitSimpleFinalDecision() {
   save(); render(); backToCaseReview();
 }
 function openFinalPermanentDecision() { openFinalDecision() } function openFinalRecoveryDecision() { openFinalDecision() } function submitUnifiedFinalDecision() { submitSimpleFinalDecision() }
-function managerApprove() { let c = cur(); if (!c.status.includes('Final')) { alert('Manager sign-off should occur after final decision.'); return } let note = prompt('Manager close comment:', 'Manager reviewed final decision, ledger, customer notices, and chargeback/recovery documentation.'); if (note === null) return; c.managerReviewed = true; c.closedDate = currentDateISO(); c.auditReady = true; c.status = c.recoveryDecisionPending || pendingRecoveryAmount(c) > 0 || String(c.status || '').toLowerCase().includes('pending recovery') ? (c.status.includes('Pending Recovery') ? c.status : 'Final Decision Made - Pending Recovery') : 'Closed - Manager Signed Off'; c.events.push(eventObj(c.status.includes('Pending Recovery') ? 'Manager sign-off completed; the case is now in Closed Cases / Log, but pending recovery remains active: ' + note : 'Manager sign-off completed and case moved to Closed Cases / Log: ' + note)); if (c.status.includes('Pending Recovery')) { c.comments.push(commentObj('Manager', note + ' The case is closed in the log, but pending recovery remains active until funds are recovered or deemed unrecovered.')); } else { c.events.push(eventObj('Reg E retention control: closed case log retains evidence of compliance for at least 2 years.')); c.comments.push(commentObj('Manager', note)); } selectedAuditId = c.id; selectedId = c.id; save(); render(); openAuditCase(c.id) }
+function managerApprove() {
+  let c = cur();
+  if (!c.status.includes('Final')) { alert('Manager sign-off should occur after final decision.'); return }
+  let note = prompt('Manager close comment:', 'Manager reviewed final decision, ledger, customer notices, and chargeback/recovery documentation.');
+  if (note === null) return;
+  c.managerReviewed = true;
+  c.closedDate = currentDateISO();
+  c.auditReady = true;
+  // Keep the case in pending-recovery closed state only when the recovery
+  // flow indicates it's an explicit pending-recovery final decision and
+  // there is a pending recovery amount.
+  if (isPendingRecoveryCaseInUi(c) && pendingRecoveryAmount(c) > 0) {
+    c.status = c.status.includes('Pending Recovery') ? c.status : 'Final Decision Made - Pending Recovery';
+    c.events.push(eventObj('Manager sign-off completed; the case is now in Closed Cases / Log, but pending recovery remains active: ' + note));
+    c.comments.push(commentObj('Manager', note + ' The case is closed in the log, but pending recovery remains active until funds are recovered or deemed unrecovered.'));
+  } else {
+    c.status = 'Closed - Manager Signed Off';
+    c.events.push(eventObj('Manager sign-off completed and case moved to Closed Cases / Log: ' + note));
+    c.events.push(eventObj('Reg E retention control: closed case log retains evidence of compliance for at least 2 years.'));
+    c.comments.push(commentObj('Manager', note));
+  }
+  selectedAuditId = c.id; selectedId = c.id; save(); render(); openAuditCase(c.id);
+}
 function markAuditReady() { managerApprove() }
 function addComment() { let c = cur(); let author = document.getElementById('commentAuthor').value || 'Officer'; let text = document.getElementById('commentText').value; let attachments = getCommentAttachments(); if (!text && !attachments.length) { alert('Enter a comment or attach at least one file.'); return } c.comments.push({ ...commentObj(author, text || 'File attachment added'), attachments }); c.events.push(eventObj('Comment added by ' + author + (attachments.length ? ' with ' + attachments.length + ' attachment(s)' : ''))); render() }
 

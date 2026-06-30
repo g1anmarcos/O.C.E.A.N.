@@ -18,16 +18,12 @@ function getPendingRecoveryCreditAtRisk(c) {
 }
 
 function isPendingRecoveryCase(c) {
-  const statusText = String(c?.status || c?.finalDecision || '').toLowerCase();
-  const hasPendingRecoverySignal = !!(
-    c && (
-      getPendingRecoveryAmount(c) > 0 ||
-      statusText.includes('pending recovery') ||
-      !!c.recoveryDecisionPending
-    )
-  );
-
-  return !!(hasPendingRecoverySignal && (!c?.auditReady || !!c?.recoveryDecisionPending));
+  // Only treat a case as a pending-recovery case when the final decision
+  // explicitly recorded the 'Customer keeps credit - pending recovery'
+  // outcome. This prevents other ledger entries or transient flags from
+  // enabling the pending-recovery UI/features unexpectedly.
+  const finalDecision = String(c?.finalDecision || c?.finalOutcomeType || '').toLowerCase();
+  return !!(finalDecision.includes('customer keeps credit - pending recovery'));
 }
 
 function isAuthorizedZelleFraudComplaint(c) {
