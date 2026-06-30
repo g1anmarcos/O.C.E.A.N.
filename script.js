@@ -38,6 +38,10 @@ function classify(x) {
   let likelyRegE = hasEft && !mixedRails;
   let reason = [];
   if (mixedRails) { likelyRegE = false; reason.push('Mixed Reg E and Non Reg E transaction types are not allowed in one claim. Split into separate claims.') }
+  if (typeof window !== 'undefined' && window.recoveryFlow && typeof window.recoveryFlow.isAuthorizedZelleFraudComplaint === 'function' && window.recoveryFlow.isAuthorizedZelleFraudComplaint(x)) {
+    likelyRegE = false;
+    reason.push('Zelle fraud complaints with customer-authorized transfers are treated as Non Reg E because the customer approved the transaction.');
+  }
   if (claimLower.includes('service not received') || claimLower.includes('merchandise') || claimLower.includes('defective') || claimLower.includes('price adjustment')) { likelyRegE = false; reason.push('Goods/services, merchandise, defective-product, and price-adjustment disputes route to card-network/alternate dispute workflows, not Reg E error resolution in this demo.') }
   if (claimLower.includes('scam')) { likelyRegE = false; reason.push('Customer-authorized scam complaints require enhanced fact review. In this demo they are not treated as Reg E unauthorized EFT unless investigator override determines the transfer was unauthorized.') }
   if (customerAuthorized) { likelyRegE = false; reason.push('Customer confirmed they authorized/sent the payment, so this is not an unauthorized EFT under Reg E. Route as a customer-authorized payment dispute (outside Reg E error resolution) unless investigator override applies.') }
@@ -179,7 +183,10 @@ function renderCaseActions(c) {
   } else if (c.status === 'Ready for Final Decision') {
     html = '<h3>Advance Case</h3><button class="good" onclick="openFinalDecision()">Final Decision</button>' + commonActionButtons(c);
   } else if (isFinalDecisionPosted(c) && !c.auditReady) {
-    html = '<h3>Advance Case</h3><button class="dark" onclick="managerApprove()">Manager Sign-Off & Close Case</button>' + commonActionButtons(c);
+    let recoveryButtons = pendingRecoveryAmount(c) > 0 || String(c.status || '').toLowerCase().includes('pending recovery') || !!c.recoveryDecisionPending
+      ? '<button class="good" onclick="resolvePendingRecoveryCase(\'' + c.id + '\',\'recovered\')">Funds recovered</button><button class="bad" onclick="resolvePendingRecoveryCase(\'' + c.id + '\',\'not-recovered\')">Funds not recovered</button>'
+      : '';
+    html = '<h3>Advance Case</h3>' + recoveryButtons + '<button class="dark" onclick="managerApprove()">Manager Sign-Off & Close Case</button>' + commonActionButtons(c);
   } else {
     html = '<h3>Case Actions</h3>' + commonActionButtons(c);
   }
@@ -225,6 +232,9 @@ function isRecoveryChargeOffEntry(e) { let t = entryType(e); return t.includes('
 function isPermanentEntry(e) { let t = entryType(e); return t.includes('finalized customer credit') || t.includes('permanent customer credit') || t.includes('final customer credit') }
 function isExternalRecoveryEntry(e) { let t = entryType(e); return t.includes('external recovery') || t.includes('funds recovered') }
 function isPendingThirdPartyEntry(e) { let t = entryType(e); return t.includes('pending third-party') || t.includes('pending third party') || t.includes('closed to customer - pending recovery') }
+function getRecoveryFlow() { if (typeof window !== 'undefined' && window.recoveryFlow) return window.recoveryFlow; if (typeof recoveryFlow !== 'undefined') return recoveryFlow; return null }
+function pendingRecoveryAmount(c) { let flow = getRecoveryFlow(); if (flow && typeof flow.getPendingRecoveryAmount === 'function') return Number(flow.getPendingRecoveryAmount(c) || 0); return ledgerPendingThirdPartyTotal(c) }
+function isPendingRecoveryCaseInUi(c) { let flow = getRecoveryFlow(); if (flow && typeof flow.isPendingRecoveryCase === 'function') return !!flow.isPendingRecoveryCase(c); return !!(c && ledgerPendingThirdPartyTotal(c) > 0) }
 function isRecoveryEntry(e) { let t = entryType(e); return (t.includes('customer recovery') || t.includes('reversal') || (t.includes('recover') && !isExternalRecoveryEntry(e))) && !isPermanentEntry(e) && !isChargeOffEntry(e) && !isPendingThirdPartyEntry(e) }
 function isPositiveProvisionalEntry(e) { let t = entryType(e); return Number(e.amount || 0) > 0 && !isChargeOffEntry(e) && !isPermanentEntry(e) && !isRecoveryEntry(e) && !isExternalRecoveryEntry(e) && !isPendingThirdPartyEntry(e) && !t.includes('adjustment correction') }
 function ledgerCreditTotal(c) { return ledgerEntries(c).filter(isPositiveProvisionalEntry).reduce((a, e) => a + Math.abs(Number(e.amount || 0)), 0) }
@@ -377,11 +387,16 @@ function submitProvisionalAdjustment() {
 function addToBinTotals(binTotals, bin, amount) { bin = bin || 'Unassigned Bin'; binTotals[bin] = (binTotals[bin] || 0) + Number(amount || 0) }
 function currentBinTotals() { let binTotals = {}; cases.forEach(c => { let active = ledgerActiveProvisional(c); let provByBin = provisionalBinSummary(c); let provTotal = Object.values(provByBin).reduce((a, v) => a + Number(v || 0), 0); if (active > 0 && provTotal > 0) { Object.entries(provByBin).forEach(([bin, val]) => addToBinTotals(binTotals, bin, active * (Number(val || 0) / provTotal))) } ledgerEntries(c).forEach(e => { if (isPermanentEntry(e)) addToBinTotals(binTotals, e.bin, Math.abs(Number(e.amount || 0))); else if (isChargeOffEntry(e)) addToBinTotals(binTotals, e.bin, Math.abs(Number(e.amount || 0))); else if (isPendingThirdPartyEntry(e)) addToBinTotals(binTotals, e.bin, Math.abs(Number(e.amount || 0))); else if (isExternalRecoveryEntry(e)) addToBinTotals(binTotals, e.bin, -Math.abs(Number(e.amount || 0))); else if (isRecoveryEntry(e)) addToBinTotals(binTotals, e.bin, -Math.abs(Number(e.amount || 0))); }); }); return binTotals }
 
-function isCaseClosedForLedger(c) { return !!(c && c.auditReady) }
+function isCaseClosedForLedger(c) {
+  if (!c) return false;
+  if (c.auditReady && isPendingRecoveryCaseInUi(c) && pendingRecoveryAmount(c) > 0) return false;
+  return !!c.auditReady;
+}
 function ledgerNetCreditIssued(c) { return ledgerEntries(c).filter(e => { let t = entryType(e); return t.includes('provisional credit issued') || t.includes('custom provisional credit issued') || t.includes('credit adjustment') }).reduce((a, e) => a + Number(e.amount || 0), 0) }
 function ledgerRecoveredTotalAny(c) { return ledgerExternalRecoveryTotal(c) + ledgerRecoveryTotal(c) }
-function ledgerFinalResolvedTotal(c) { return Math.min(Math.max(ledgerNetCreditIssued(c), 0), ledgerPermanentTotal(c) + ledgerChargeOffTotal(c) + ledgerPendingThirdPartyTotal(c) + ledgerRecoveredTotalAny(c) + ledgerRecoveryChargeOffTotal(c)) }
-function ledgerOpenCreditAtRiskForCase(c) { return Math.max(ledgerNetCreditIssued(c) - ledgerFinalResolvedTotal(c), 0) }
+function ledgerFinalResolvedTotal(c) { return Math.min(Math.max(ledgerNetCreditIssued(c), 0), ledgerPermanentTotal(c) + ledgerChargeOffTotal(c) + ledgerRecoveredTotalAny(c) + ledgerRecoveryChargeOffTotal(c)) }
+function pendingRecoveryOpenAmount(c) { if (!c || !isPendingRecoveryCaseInUi(c)) return 0; return Math.max(pendingRecoveryAmount(c), 0) }
+function ledgerOpenCreditAtRiskForCase(c) { let netIssued = ledgerNetCreditIssued(c); let resolved = ledgerFinalResolvedTotal(c); let pendingOpen = pendingRecoveryOpenAmount(c); return Math.max(Math.max(netIssued, pendingOpen) - resolved, 0) }
 function postedCreditExposure(c) { return Math.max(ledgerNetCreditIssued(c), ledgerCreditTotal(c), 0) }
 function ledgerTotalExposure() { return cases.reduce((a, c) => a + postedCreditExposure(c), 0) }
 function ledgerCreditAtRisk() { return cases.filter(c => !isCaseClosedForLedger(c)).reduce((a, c) => a + ledgerOpenCreditAtRiskForCase(c), 0) }
@@ -469,6 +484,7 @@ function submitSimpleFinalDecision() {
     c.finalDecision = 'Customer keeps credit - pending recovery';
     c.status = 'Final Decision Made - Pending Recovery';
     c.creditStatus = 'Customer closed; pending recovery ' + money(amount) + '.';
+    c.recoveryDecisionPending = true;
     autoNotify(c, 'Customer closure notice generated and sent; recovery remains pending on the bank side.');
     c.events.push(eventObj('Final decision posted: customer keeps credit with pending recovery ' + money(amount) + '.'));
   }
@@ -480,7 +496,7 @@ function submitSimpleFinalDecision() {
   save(); render(); backToCaseReview();
 }
 function openFinalPermanentDecision() { openFinalDecision() } function openFinalRecoveryDecision() { openFinalDecision() } function submitUnifiedFinalDecision() { submitSimpleFinalDecision() }
-function managerApprove() { let c = cur(); if (!c.status.includes('Final')) { alert('Manager sign-off should occur after final decision.'); return } let note = prompt('Manager close comment:', 'Manager reviewed final decision, ledger, customer notices, and chargeback/recovery documentation. Case closed.'); if (note === null) return; c.managerReviewed = true; c.auditReady = true; c.closedDate = currentDateISO(); c.status = 'Closed - Manager Signed Off'; c.events.push(eventObj('Manager sign-off completed and case moved to Closed Cases / Log: ' + note)); c.events.push(eventObj('Reg E retention control: closed case log retains evidence of compliance for at least 2 years.')); c.comments.push(commentObj('Manager', note)); selectedAuditId = c.id; selectedId = c.id; save(); render(); openAuditCase(c.id) }
+function managerApprove() { let c = cur(); if (!c.status.includes('Final')) { alert('Manager sign-off should occur after final decision.'); return } let note = prompt('Manager close comment:', 'Manager reviewed final decision, ledger, customer notices, and chargeback/recovery documentation.'); if (note === null) return; c.managerReviewed = true; c.closedDate = currentDateISO(); c.auditReady = true; c.status = c.recoveryDecisionPending || pendingRecoveryAmount(c) > 0 || String(c.status || '').toLowerCase().includes('pending recovery') ? (c.status.includes('Pending Recovery') ? c.status : 'Final Decision Made - Pending Recovery') : 'Closed - Manager Signed Off'; c.events.push(eventObj(c.status.includes('Pending Recovery') ? 'Manager sign-off completed; the case is now in Closed Cases / Log, but pending recovery remains active: ' + note : 'Manager sign-off completed and case moved to Closed Cases / Log: ' + note)); if (c.status.includes('Pending Recovery')) { c.comments.push(commentObj('Manager', note + ' The case is closed in the log, but pending recovery remains active until funds are recovered or deemed unrecovered.')); } else { c.events.push(eventObj('Reg E retention control: closed case log retains evidence of compliance for at least 2 years.')); c.comments.push(commentObj('Manager', note)); } selectedAuditId = c.id; selectedId = c.id; save(); render(); openAuditCase(c.id) }
 function markAuditReady() { managerApprove() }
 function addComment() { let c = cur(); let author = document.getElementById('commentAuthor').value || 'Officer'; let text = document.getElementById('commentText').value; let attachments = getCommentAttachments(); if (!text && !attachments.length) { alert('Enter a comment or attach at least one file.'); return } c.comments.push({ ...commentObj(author, text || 'File attachment added'), attachments }); c.events.push(eventObj('Comment added by ' + author + (attachments.length ? ' with ' + attachments.length + ' attachment(s)' : ''))); render() }
 
@@ -566,12 +582,48 @@ function recordMastercardRepresentment() {
   save(); render(); selectCase(c.id);
 }
 function matchesRecoveryCase(c) {
-  let v = { caseId: c.id, customer: c.customer, account: c.account, amount: String(ledgerPendingThirdPartyTotal(c)) + ' ' + money(ledgerPendingThirdPartyTotal(c)) };
+  let amount = pendingRecoveryAmount(c);
+  let v = { caseId: c.id, customer: c.customer, account: c.account, amount: String(amount) + ' ' + money(amount) };
   return Object.entries(recoveryFilters).every(([k, f]) => !f || String(v[k] || '').toLowerCase().includes(f));
 }
+function resolvePendingRecoveryCase(caseId, outcome) {
+  let c = cases.find(x => x.id === caseId);
+  if (!c) return;
+  let amount = pendingRecoveryAmount(c);
+  if (amount <= 0) {
+    alert('There is no pending recovery balance available for this case.');
+    return;
+  }
+  let note = prompt(outcome === 'recovered' ? 'Recovery note:' : 'Outcome note:', outcome === 'recovered' ? 'Funds recovered through pending recovery workflow.' : 'Recovery did not produce funds.');
+  if (note === null) return;
+  let flow = getRecoveryFlow();
+  let updated = flow && typeof flow.resolvePendingRecovery === 'function' ? flow.resolvePendingRecovery(c, outcome, amount, note) : null;
+  let commentText = outcome === 'recovered'
+    ? 'Pending recovery resolved as funds recovered. ' + note
+    : 'Pending recovery resolved as funds not recovered. ' + note;
+  c.comments = Array.isArray(c.comments) ? [...c.comments] : [];
+  c.events = Array.isArray(c.events) ? [...c.events] : [];
+  if (updated) Object.assign(c, updated);
+  else {
+    c.provisionalLedger = c.provisionalLedger || [];
+    c.provisionalLedger.push({ date: currentDateISO(), type: outcome === 'recovered' ? 'Funds Recovered' : 'Bank Loss / Charge-Off', amount, description: note, bin: 'GL-Operations', officer: 'O.C.E.A.N Recovery' });
+    c.status = outcome === 'recovered' ? 'Closed - Funds Recovered' : 'Closed - Not Recovered';
+    c.finalDecision = outcome === 'recovered' ? 'Funds recovered' : 'Not recovered';
+    c.creditStatus = outcome === 'recovered' ? 'Pending recovery resolved: funds recovered' : 'Pending recovery resolved: funds not recovered';
+    c.managerReviewed = true;
+    c.auditReady = true;
+    c.recoveryDecisionPending = false;
+    c.closedDate = currentDateISO();
+  }
+  c.comments.push(commentObj('O.C.E.A.N Recovery', commentText));
+  c.events.push(eventObj(outcome === 'recovered' ? 'Pending recovery resolved: funds recovered.' : 'Pending recovery resolved: funds not recovered.'));
+  c.recoveryDecisionPending = false;
+  c.auditReady = true;
+  save(); render(); openAuditCase(c.id);
+}
 function renderRecovery() {
-  let rows = cases.filter(c => ledgerPendingThirdPartyTotal(c) > 0).filter(matchesRecoveryCase);
-  renderCompactCaseCards('recoveryBody', rows, 'No pending recovery cases match the current filters.', (c) => compactCaseCard(c, { title: c.id, subtitle: c.customer + ' • ' + c.account, amount: money(ledgerPendingThirdPartyTotal(c)), status: c.status, meta: [c.txnType || caseTxnType(c), c.status], footer: 'Pending third-party recovery', openHandler: "selectCase('" + c.id + "')" }));
+  let rows = cases.filter(c => isPendingRecoveryCaseInUi(c) && pendingRecoveryAmount(c) > 0).filter(matchesRecoveryCase);
+  renderCompactCaseCards('recoveryBody', rows, 'No pending recovery cases match the current filters.', (c) => compactCaseCard(c, { title: c.id, subtitle: c.customer + ' • ' + c.account, amount: money(pendingRecoveryAmount(c)), status: c.status, meta: [c.txnType || caseTxnType(c), c.status], footer: 'Pending recovery', actions: '<button class="good smallBtn" onclick="event.stopPropagation();resolvePendingRecoveryCase(\'' + c.id + '\',\'recovered\')">Funds recovered</button><button class="bad smallBtn" onclick="event.stopPropagation();resolvePendingRecoveryCase(\'' + c.id + '\',\'not-recovered\')">Funds not recovered</button><button class="secondary smallBtn" onclick="event.stopPropagation();selectCase(\'' + c.id + '\')">Open case</button>', openHandler: "selectCase('" + c.id + "')" }));
 }
 function renderManager() {
   let rows = applySort(cases.filter(isManagerCase).filter(matchesManager), managerSort, (c, f) => f === 'caseId' ? c.id : c.noticeDate);

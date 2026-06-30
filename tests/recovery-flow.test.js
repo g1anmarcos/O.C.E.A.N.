@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isPendingRecoveryCase, getPendingRecoveryAmount, getPendingRecoveryCreditAtRisk, resolvePendingRecovery } = require('../recovery-flow');
+const { isPendingRecoveryCase, getPendingRecoveryAmount, getPendingRecoveryCreditAtRisk, isAuthorizedZelleFraudComplaint, resolvePendingRecovery } = require('../recovery-flow');
 
 function makeCase(overrides = {}) {
   return {
@@ -27,6 +27,14 @@ test('pending recovery cases are detected and report their unresolved amount', (
 
   assert.equal(isPendingRecoveryCase(caseData), true);
   assert.equal(getPendingRecoveryAmount(caseData), 250);
+});
+
+test('pending recovery cases surface from decision metadata even without a legacy ledger entry', () => {
+  const caseData = makeCase({ provisionalLedger: [], status: 'Final Decision Made - Pending Recovery', recoveryDecisionPending: true, amount: 150 });
+
+  assert.equal(isPendingRecoveryCase(caseData), true);
+  assert.equal(getPendingRecoveryAmount(caseData), 150);
+  assert.equal(getPendingRecoveryCreditAtRisk(caseData), 150);
 });
 
 test('funds recovered closes the pending recovery and records a recovered ledger entry', () => {
@@ -59,4 +67,15 @@ test('manager-closed pending recovery remains visible in the pending recovery qu
   assert.equal(isPendingRecoveryCase(caseData), true);
   assert.equal(getPendingRecoveryAmount(caseData), 250);
   assert.equal(getPendingRecoveryCreditAtRisk(caseData), 250);
+});
+
+test('authorized zelle fraud complaints are treated as non-reg-e', () => {
+  const caseData = {
+    claimType: 'Fraud complaint',
+    txnType: 'Zelle / P2P',
+    flaggedTransactions: [{ type: 'Zelle / P2P', amount: 100 }],
+    claimDetails: { detailAuthorized: 'Yes' },
+  };
+
+  assert.equal(isAuthorizedZelleFraudComplaint(caseData), true);
 });

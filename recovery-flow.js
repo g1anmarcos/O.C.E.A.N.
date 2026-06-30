@@ -1,9 +1,15 @@
 function getPendingRecoveryAmount(c) {
-  if (!c || !Array.isArray(c.provisionalLedger)) return 0;
+  if (!c) return 0;
 
-  return c.provisionalLedger
-    .filter((entry) => String(entry.type || '').toLowerCase().includes('pending recovery'))
-    .reduce((total, entry) => total + Number(entry.amount || 0), 0);
+  const pendingEntries = Array.isArray(c.provisionalLedger)
+    ? c.provisionalLedger.filter((entry) => String(entry.type || '').toLowerCase().includes('pending recovery'))
+    : [];
+  const ledgerAmount = pendingEntries.reduce((total, entry) => total + Number(entry.amount || 0), 0);
+
+  if (ledgerAmount > 0) return ledgerAmount;
+
+  const fallbackAmount = Number(c.pendingRecoveryAmount || c.recoveryAmount || c.amount || 0);
+  return Number.isFinite(fallbackAmount) && fallbackAmount > 0 ? fallbackAmount : 0;
 }
 
 function getPendingRecoveryCreditAtRisk(c) {
@@ -12,7 +18,29 @@ function getPendingRecoveryCreditAtRisk(c) {
 }
 
 function isPendingRecoveryCase(c) {
-  return !!(c && getPendingRecoveryAmount(c) > 0 && (!c.auditReady || !!c.recoveryDecisionPending));
+  const statusText = String(c?.status || c?.finalDecision || '').toLowerCase();
+  const hasPendingRecoverySignal = !!(
+    c && (
+      getPendingRecoveryAmount(c) > 0 ||
+      statusText.includes('pending recovery') ||
+      !!c.recoveryDecisionPending
+    )
+  );
+
+  return !!(hasPendingRecoverySignal && (!c?.auditReady || !!c?.recoveryDecisionPending));
+}
+
+function isAuthorizedZelleFraudComplaint(c) {
+  const claim = String(c?.claimType || c?.errorType || '').toLowerCase();
+  const txns = Array.isArray(c?.flaggedTransactions) && c.flaggedTransactions.length
+    ? c.flaggedTransactions
+    : (c?.txnType ? [{ type: c.txnType }] : []);
+  const txnTypes = [...new Set(txns.map((t) => String(t?.type || '')).filter(Boolean))];
+  const details = c?.claimDetails || {};
+  const customerAuthorized = details.detailAuthorized === 'Yes' || details.detailCustomerSent === 'Yes - customer participated';
+  const isFraudComplaint = claim.includes('fraud') || claim.includes('fraud complaint');
+  const isZelle = txnTypes.includes('Zelle / P2P');
+  return isFraudComplaint && isZelle && customerAuthorized;
 }
 
 function resolvePendingRecovery(c, outcome, amount, note) {
@@ -66,6 +94,7 @@ const recoveryFlow = {
   getPendingRecoveryAmount,
   getPendingRecoveryCreditAtRisk,
   isPendingRecoveryCase,
+  isAuthorizedZelleFraudComplaint,
   resolvePendingRecovery,
 };
 
